@@ -24,6 +24,9 @@ import dev.briiqn.reunion.core.data.ForwardingMode;
 import dev.briiqn.reunion.core.network.packet.data.RawPacket;
 import dev.briiqn.reunion.core.network.pipeline.java.decode.JavaCipherDecoder;
 import dev.briiqn.reunion.core.network.pipeline.java.encode.JavaCipherEncoder;
+import dev.briiqn.reunion.core.network.packet.manager.PacketManager;
+import dev.briiqn.reunion.core.network.packet.protocol.console.s2c.impl.ConsoleAuthResultS2CPacket;
+import dev.briiqn.reunion.core.network.packet.protocol.console.s2c.impl.ConsoleAuthSchemeS2CPacket;
 import dev.briiqn.reunion.core.session.ConsoleSession;
 import dev.briiqn.reunion.core.session.JavaSession;
 import dev.briiqn.reunion.core.util.StringUtil;
@@ -233,6 +236,25 @@ public final class JavaLoginHandler {
         digest.update(pubKeyBytes);
         String hash = new BigInteger(digest.digest()).toString(16);
 
+        // ---- MinecraftConsoles fork: relay the join to the LCE client -------------------------
+        // A protocol-80 client carries its own Mojang account (its auth manager already knows how
+        // to call sessionserver/join). In that case the proxy must NOT authenticate as itself:
+        // it hands the client the hash it just computed and lets the player's own access token
+        // prove ownership. The shared secret never leaves this process and the access token never
+        // leaves the client - the hash is the only thing that crosses, and it is useless on its
+        // own.
+        //
+        // The Java handshake is suspended here and resumed in onConsoleAuthResponse().
+        if (cs.getClientVersion() >= 80 && cs.getLceClientMojangUuid() != null
+            && !cs.getLceClientMojangUuid().isEmpty()) {
+          this.pending = new PendingEncryption(ctx, secretKey, publicKey, verifyToken);
+          log.info("[Auth-Relay] asking LCE client '{}' to authenticate itself (uuid={})",
+              cs.getPlayerName(), cs.getLceClientMojangUuid());
+          PacketManager.sendToConsole(cs,
+              new ConsoleAuthSchemeS2CPacket(java.util.List.of("mojang"), hash));
+          return;
+        }
+
         com.alibaba.fastjson2.JSONObject payload = new com.alibaba.fastjson2.JSONObject();
         payload.put("accessToken", accessToken);
         payload.put("selectedProfile", uuid);
@@ -251,36 +273,99 @@ public final class JavaLoginHandler {
           return;
         }
 
-        Cipher rsa = Cipher.getInstance("RSA");
-        rsa.init(Cipher.ENCRYPT_MODE, publicKey);
-        byte[] encSecret = rsa.doFinal(secretKey.getEncoded());
-        byte[] encToken = rsa.doFinal(verifyToken);
-
-        ByteBuf resp = ctx.alloc().buffer();
-        VarIntUtil.write(resp, encSecret.length);
-        resp.writeBytes(encSecret);
-        VarIntUtil.write(resp, encToken.length);
-        resp.writeBytes(encToken);
-
-        ctx.writeAndFlush(new RawPacket(0x01, resp)).addListener(f -> {
-          try {
-            Cipher decrypt = Cipher.getInstance("AES/CFB8/NoPadding");
-            decrypt.init(Cipher.DECRYPT_MODE, secretKey,
-                new IvParameterSpec(secretKey.getEncoded()));
-            Cipher encrypt = Cipher.getInstance("AES/CFB8/NoPadding");
-            encrypt.init(Cipher.ENCRYPT_MODE, secretKey,
-                new IvParameterSpec(secretKey.getEncoded()));
-
-            ctx.pipeline().addFirst("decrypt", new JavaCipherDecoder(decrypt));
-            ctx.pipeline().addFirst("encrypt", new JavaCipherEncoder(encrypt));
-            log.info("Encryption enabled for Java connection of {}.", cs.getPlayerName());
-          } catch (Exception ex) {
-            log.error("Failed to install cipher pipeline: {}", ex.getMessage());
-            ctx.close();
-          }
-        });
+        completeEncryption(ctx, secretKey, publicKey, verifyToken);
       } catch (Exception e) {
         log.error("Authentication error for {}: {}", cs.getPlayerName(), e.getMessage(), e);
+        ctx.close();
+      }
+    });
+  }
+
+  // ---- MinecraftConsoles fork: protocol-80 auth relay -----------------------------------------
+
+  /** Java-side encryption state parked while the LCE client authenticates itself. */
+  private record PendingEncryption(ChannelHandlerContext ctx, SecretKey secretKey,
+                                   PublicKey publicKey, byte[] verifyToken) {
+
+  }
+
+  private volatile PendingEncryption pending;
+
+  /**
+   * Resumes the suspended Java encryption handshake once the LCE client has posted to
+   * sessionserver/join with its own token. Called from ConsoleAuthResponseC2SPacket.
+   *
+   * <p>The proxy does NOT re-verify with hasJoined: that is the Java server's job, and it is about
+   * to do exactly that with the username we sent in LoginStart. All that is left here is to prove
+   * to the server that we hold the shared secret.
+   */
+  public void onConsoleAuthResponse(String chosenScheme, String username) {
+    PendingEncryption p = this.pending;
+    this.pending = null;
+
+    if (p == null) {
+      log.warn("[Auth-Relay] auth response from '{}' with no handshake in flight - ignored",
+          cs.getPlayerName());
+      return;
+    }
+
+    if (!"mojang".equals(chosenScheme)) {
+      // The client could not (or would not) authenticate online. There is nothing to fall back
+      // to: an online-mode Java server will reject us at hasJoined anyway, and continuing would
+      // just turn a clear error into a confusing disconnect several packets later.
+      log.error("[Auth-Relay] client '{}' answered scheme '{}' - cannot join an online-mode server",
+          cs.getPlayerName(), chosenScheme);
+      PacketManager.sendToConsole(cs, new ConsoleAuthResultS2CPacket(
+          false, "", "", "This server requires a Mojang account"));
+      p.ctx().close();
+      return;
+    }
+
+    log.info("[Auth-Relay] client '{}' authenticated as '{}' - resuming Java handshake",
+        cs.getPlayerName(), username);
+    try {
+      completeEncryption(p.ctx(), p.secretKey(), p.publicKey(), p.verifyToken());
+      PacketManager.sendToConsole(cs, new ConsoleAuthResultS2CPacket(
+          true, cs.getLceClientMojangUuid(), username, ""));
+    } catch (Exception e) {
+      log.error("[Auth-Relay] failed to resume handshake for {}: {}",
+          cs.getPlayerName(), e.getMessage(), e);
+      p.ctx().close();
+    }
+  }
+
+  /**
+   * The half of the handshake that is identical whoever did the sessionserver/join: RSA-encrypt
+   * the shared secret and the verify token, send EncryptionResponse, then install the AES/CFB8
+   * pipeline once the bytes are on the wire.
+   */
+  private void completeEncryption(ChannelHandlerContext ctx, SecretKey secretKey,
+      PublicKey publicKey, byte[] verifyToken) throws Exception {
+    Cipher rsa = Cipher.getInstance("RSA");
+    rsa.init(Cipher.ENCRYPT_MODE, publicKey);
+    byte[] encSecret = rsa.doFinal(secretKey.getEncoded());
+    byte[] encToken = rsa.doFinal(verifyToken);
+
+    ByteBuf resp = ctx.alloc().buffer();
+    VarIntUtil.write(resp, encSecret.length);
+    resp.writeBytes(encSecret);
+    VarIntUtil.write(resp, encToken.length);
+    resp.writeBytes(encToken);
+
+    ctx.writeAndFlush(new RawPacket(0x01, resp)).addListener(f -> {
+      try {
+        Cipher decrypt = Cipher.getInstance("AES/CFB8/NoPadding");
+        decrypt.init(Cipher.DECRYPT_MODE, secretKey,
+            new IvParameterSpec(secretKey.getEncoded()));
+        Cipher encrypt = Cipher.getInstance("AES/CFB8/NoPadding");
+        encrypt.init(Cipher.ENCRYPT_MODE, secretKey,
+            new IvParameterSpec(secretKey.getEncoded()));
+
+        ctx.pipeline().addFirst("decrypt", new JavaCipherDecoder(decrypt));
+        ctx.pipeline().addFirst("encrypt", new JavaCipherEncoder(encrypt));
+        log.info("Encryption enabled for Java connection of {}.", cs.getPlayerName());
+      } catch (Exception ex) {
+        log.error("Failed to install cipher pipeline: {}", ex.getMessage());
         ctx.close();
       }
     });
@@ -317,6 +402,16 @@ public final class JavaLoginHandler {
   }
 
   private String resolveLoginName() {
+    // MinecraftConsoles fork: when the LCE client brings its own Mojang account, LoginStart must
+    // carry THAT player's name. The Java server looks up exactly this name at hasJoined, against
+    // the join the client itself performed - send the proxy's profile name here and the server
+    // would check an account nobody authenticated. cs.getPlayerName() is the name the client's
+    // auth manager chose (ClientConnection::sendLoginPacketAfterAuth), and is deliberately not
+    // given the configured player prefix.
+    if (cs.getClientVersion() >= 80 && cs.getLceClientMojangUuid() != null
+        && !cs.getLceClientMojangUuid().isEmpty()) {
+      return cs.getPlayerName();
+    }
     if (server.getConfig().getAuth().isOnlineMode() && AuthUtil.hasSession()) {
       try {
         return AuthUtil.getSession().getMinecraftProfile().getUpToDate().getName();

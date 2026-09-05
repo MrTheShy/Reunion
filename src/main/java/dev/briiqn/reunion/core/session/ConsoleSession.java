@@ -125,6 +125,19 @@ public final class ConsoleSession {
   private String playerName = "Player";
   @Setter
   private long xuid = 0L;
+  // ---- MinecraftConsoles fork ----------------------------------------------------------------
+  // Identity the LCE client asserted for ITSELF at login (protocol 80 only). On 39/78 the client
+  // has no Java identity to offer and these stay null: the proxy falls back to its own account.
+  //
+  // lceClientUuid is the full 128-bit id (protocol 80 packs it as hi/lo across the two 8-byte
+  // slots that 78 used for offline/online XUIDs). lceClientMojangUuid is the dashed string the
+  // client's auth manager resolved, and is the one that goes to sessionserver - see
+  // JavaLoginHandler.handleEncryptionRequest, which asks the client to prove ownership of it
+  // instead of authenticating with the proxy's own account.
+  @Setter
+  private volatile UUID lceClientUuid = null;
+  @Setter
+  private volatile String lceClientMojangUuid = null;
   @Setter
   private boolean loggedIn = false;
   private int javaEntityId = -1;

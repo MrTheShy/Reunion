@@ -18,6 +18,7 @@
 package dev.briiqn.reunion;
 
 import dev.briiqn.reunion.core.ReunionServer;
+import dev.briiqn.reunion.core.control.McConsolesControlChannel;
 import lombok.extern.log4j.Log4j2;
 
 @Log4j2
@@ -27,6 +28,17 @@ public final class Main {
     log.info("Starting Reunion...");
     ReunionServer server = new ReunionServer();
     Runtime.getRuntime().addShutdownHook(new Thread(server::stop, "reunion-shutdown"));
+
+    // MinecraftConsoles fork: when Minecraft.Client launched us it passes --mcc-control-port=N and
+    // is already listening on it. Connect AFTER start() so the proxy.ready we send is true - the
+    // game takes it as "you may now join". Without the flag nothing here runs and the proxy is
+    // exactly the standalone one upstream ships.
+    int controlPort = McConsolesControlChannel.parsePort(args);
+
     server.start();
+
+    if (controlPort > 0) {
+      McConsolesControlChannel.connect(controlPort, server);
+    }
   }
 }

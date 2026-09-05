@@ -28,6 +28,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.extern.log4j.Log4j2;
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.Yaml;
@@ -216,7 +217,11 @@ public class Config {
 
   @Getter
   public static class Connection {
+    // MinecraftConsoles fork: settable so the game can pick the target server over the control
+    // channel (topic server.select) instead of the player editing config.yml and restarting.
+    @Setter
     private String javaHost = "127.0.0.1";
+    @Setter
     private int javaPort = 25564;
     private int listenPort = 25565;
     private String playerPrefix = "_";

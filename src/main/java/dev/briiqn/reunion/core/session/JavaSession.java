@@ -65,8 +65,18 @@ public final class JavaSession {
     return new JavaChannelHandler(this);
   }
 
+  // MinecraftConsoles fork: the login handler used to be created and dropped on the floor here.
+  // The protocol-80 auth relay needs to reach it again later: the Java server's encryption
+  // handshake is suspended mid-flight while the LCE client proves ownership of its own Mojang
+  // account, and ConsoleAuthResponseC2SPacket has to resume THIS connection's handler when the
+  // answer comes back. Kept as a field for exactly that.
+  @Getter
+  private volatile JavaLoginHandler loginHandler;
+
   public void sendHandshake(String playerName, String host, int port) {
-    new JavaLoginHandler(this).sendHandshake(host, port);
+    JavaLoginHandler handler = new JavaLoginHandler(this);
+    this.loginHandler = handler;
+    handler.sendHandshake(host, port);
   }
 
   public void submitPacket(Runnable task) {

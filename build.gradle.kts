@@ -59,6 +59,15 @@ dependencies {
     implementation("org.jdbi:jdbi3-sqlobject:3.52.0")
 }
 
+// MinecraftConsoles fork: the sources are UTF-8 and contain non-ASCII character literals
+// (e.g. CraftingTranslator.java:88 uses '×'). javac's -encoding still defaults to the
+// PLATFORM charset even on JDK 18+, where file.encoding became UTF-8 - so on a Windows box with
+// a Windows-1252 default this fails to compile with "unclosed character literal", while the same
+// tree builds fine on a UTF-8 host. Pin it so the build is host-independent.
+tasks.withType<JavaCompile>().configureEach {
+    options.encoding = "UTF-8"
+}
+
 tasks.named<ProcessResources>("processResources") {
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }

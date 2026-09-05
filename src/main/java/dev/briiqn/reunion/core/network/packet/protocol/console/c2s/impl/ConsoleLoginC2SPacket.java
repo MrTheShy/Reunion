@@ -36,7 +36,7 @@ import io.netty.buffer.ByteBuf;
 import lombok.extern.log4j.Log4j2;
 
 @Log4j2
-@PacketInfo(side = PacketSide.CONSOLE_C2S, id = 1, supports = {39, 78})
+@PacketInfo(side = PacketSide.CONSOLE_C2S, id = 1, supports = {39, 78, 80})
 public final class ConsoleLoginC2SPacket extends ConsoleC2SPacket {
 
   private int clientVersion;
@@ -45,6 +45,9 @@ public final class ConsoleLoginC2SPacket extends ConsoleC2SPacket {
   private int capeId;
   private long offlineXuid;
   private long onlineXuid;
+  // MinecraftConsoles fork, protocol 80: the dashed Mojang UUID the client's own auth manager
+  // resolved (MCAuth). Empty on 39/78, which have no such field.
+  private String mojangUuid = "";
 
   public ConsoleLoginC2SPacket() {
   }
@@ -73,6 +76,23 @@ public final class ConsoleLoginC2SPacket extends ConsoleC2SPacket {
     buf.readInt();                       // uiGamePrivileges
     buf.readShort();                     // xzSize
     buf.readByte();                      // hellScale
+
+    // ---- MinecraftConsoles fork: protocol 80 ------------------------------------------------
+    // Handled here rather than in a read80() override, even though PacketRegistry supports
+    // per-protocol methods: the dispatcher picks the override from session.getClientVersion(),
+    // and for THIS packet the session has no version yet - it is set from this very packet's
+    // handle(). clientVersion is the first field on the wire, so the read is self-describing.
+    //
+    // Two things differ at 80, and only the second one is visible here:
+    //  * the two 8-byte ids above are no longer offline/online XUIDs; they are the high and low
+    //    halves of ONE 128-bit GameUUID. Same 16 bytes, so nothing to change in the read - see
+    //    handle() for where the meaning matters.
+    //  * a dashed Mojang UUID string is appended. It MUST be consumed: ConsoleConnectionHandler
+    //    loops `while (data.isReadable())` over the frame, so leftover bytes are not discarded -
+    //    they would be parsed as the next packet's id and desync the whole connection.
+    if (clientVersion >= 80) {
+      mojangUuid = StringUtil.readConsoleUtf(buf);
+    }
   }
 
   @Override
@@ -98,6 +118,21 @@ public final class ConsoleLoginC2SPacket extends ConsoleC2SPacket {
     session.setClientVersion(clientVersion);
     session.setPlayerName(username);
     session.setXuid(onlineXuid != 0 ? onlineXuid : offlineXuid);
+
+    // ---- MinecraftConsoles fork: protocol 80 ------------------------------------------------
+    // At 78 the two 8-byte slots are separate offline/online XUIDs and the line above picks one.
+    // At 80 they are the high and low halves of a single 128-bit id, so picking "one" would hand
+    // us half a UUID. Reassemble it, and keep the dashed string the client's auth manager sent -
+    // that string is what the Mojang session server is asked about during the encryption
+    // handshake, so the account being authenticated is the PLAYER'S, not the proxy's.
+    if (clientVersion >= 80) {
+      session.setLceClientUuid(new java.util.UUID(offlineXuid, onlineXuid));
+      if (mojangUuid != null && !mojangUuid.isEmpty()) {
+        session.setLceClientMojangUuid(mojangUuid);
+      }
+      log.info("[Console] protocol 80 client: uuid={} mojangUuid='{}'",
+          session.getLceClientUuid(), mojangUuid);
+    }
 
     if (clientVersion > ReunionServer.maxSupportedClientProtocol) {
       log.warn("[Console] Client version {} might not be fully supported (expected 78)",
