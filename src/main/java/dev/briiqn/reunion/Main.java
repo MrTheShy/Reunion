@@ -18,6 +18,7 @@
 package dev.briiqn.reunion;
 
 import dev.briiqn.reunion.core.ReunionServer;
+import dev.briiqn.reunion.core.config.Config;
 import dev.briiqn.reunion.core.control.McConsolesControlChannel;
 import lombok.extern.log4j.Log4j2;
 
@@ -26,15 +27,19 @@ public final class Main {
 
   public static void main(String[] args) throws Exception {
     log.info("Starting Reunion...");
+
+    // MinecraftConsoles fork: resolved BEFORE the server exists, because constructing it
+    // constructs the Config, and Config.load() needs to know whether a human or the game is
+    // driving us - a first run with no config.yml exits by default, which would strand the game.
+    int controlPort = McConsolesControlChannel.parsePort(args);
+    Config.LAUNCHED_BY_GAME = controlPort > 0;
+
     ReunionServer server = new ReunionServer();
     Runtime.getRuntime().addShutdownHook(new Thread(server::stop, "reunion-shutdown"));
 
-    // MinecraftConsoles fork: when Minecraft.Client launched us it passes --mcc-control-port=N and
-    // is already listening on it. Connect AFTER start() so the proxy.ready we send is true - the
-    // game takes it as "you may now join". Without the flag nothing here runs and the proxy is
-    // exactly the standalone one upstream ships.
-    int controlPort = McConsolesControlChannel.parsePort(args);
-
+    // Connect AFTER start() so the proxy.ready we send is true - the game takes it as
+    // "you may now join". Without the flag nothing here runs and the proxy is exactly the
+    // standalone one upstream ships.
     server.start();
 
     if (controlPort > 0) {

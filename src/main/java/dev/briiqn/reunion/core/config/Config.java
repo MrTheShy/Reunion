@@ -60,6 +60,10 @@ public class Config {
     load();
   }
 
+  // MinecraftConsoles fork: set by Main BEFORE the server (and therefore this config) is
+  // constructed, from the presence of --mcc-control-port. See the use in load().
+  public static volatile boolean LAUNCHED_BY_GAME = false;
+
   @SuppressWarnings("unchecked")
   public void load() {
     if (!file.exists()) {
@@ -76,8 +80,20 @@ public class Config {
       } catch (Exception e) {
         log.error("failed to drop default config: {}", e.getMessage());
       }
-      System.exit(0);
-      return;
+
+      // MinecraftConsoles fork: "review it and restart" is advice for a human running the proxy
+      // standalone. When the GAME launched us there is nobody to read it and nobody to restart
+      // us - exiting here would leave the client waiting on a control channel that never
+      // connects, and the only symptom would be a silent 60 second stall. The game overrides
+      // java-host / java-port over the control channel anyway (topic server.select), so the
+      // freshly dropped defaults are exactly what we want to run with.
+      if (LAUNCHED_BY_GAME) {
+        log.info("default config dropped; continuing because the game is driving us.");
+        // Fall through into the normal load below so the defaults actually take effect.
+      } else {
+        System.exit(0);
+        return;
+      }
     }
 
     try (InputStream in = new FileInputStream(file)) {
