@@ -74,22 +74,20 @@ public final class ConsoleMovePlayerPosRotS2CPacket extends ConsoleS2CPacket {
     double feetY = position.y();
     double stanceY = feetY + EYE_HEIGHT;
 
-    // MinecraftConsoles fork: feet in the second field, eyes in the third - the order the client
-    // actually reads, which is the same one it uses when it sends.
+    // The second field is the EYE height here, and that is not a mistake even though the client
+    // puts its FEET in the same field when it sends. The two directions genuinely disagree, the
+    // way the 1.7-era Java protocol did.
     //
-    // These two were the other way round, so every teleport placed the player 1.62 blocks above
-    // where the server had put them. The client then fell, reported a position the server had not
-    // authorised, and was corrected - which teleported it 1.62 blocks up again. Measured on a live
-    // session before the fix: 297 teleports in 196 seconds, with the correction distance sitting
-    // at 1.31 to 2.16 blocks, centred on the eye height plus whatever horizontal movement had
-    // happened in between. It also accounts for the reported "flash somewhere else and snap back".
+    // Entity::setPos is what settles it: bb->set(..., y - heightOffset, ...), so player->y is the
+    // eye position and bb->y0 the feet. On the way in, ClientConnection::handleMovePlayer feeds
+    // this field straight into absMoveTo, which lands in player->y - eye space. On the way out it
+    // fills the same field with bb->y0 - feet.
     //
-    // The client's own handler settles the order beyond argument: it assigns the second field
-    // straight into the position it moves to, and when it answers it puts the bounding box floor
-    // back in that same field and the eye position in the third.
+    // Do not "fix" this by matching the two directions. It was tried: swapping them puts every
+    // teleport 1.62 blocks too low and the player spawns inside the floor.
     buf.writeDouble(position.x());
-    buf.writeDouble(feetY);
     buf.writeDouble(stanceY);
+    buf.writeDouble(feetY);
     buf.writeDouble(position.z());
     buf.writeFloat(yaw);
     buf.writeFloat(pitch);
