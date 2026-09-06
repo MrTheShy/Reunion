@@ -99,19 +99,7 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
     float newPitch = hasRot ? rot.pitch() : lastRot.pitch();
 
     if (session.hasPendingTeleport()) {
-      // MinecraftConsoles fork: ANY movement packet acknowledges the teleport, not only one
-      // carrying position and rotation together.
-      //
-      // An LCE client does not send a combined update every tick - it sends position-only and
-      // rotation-only packets too (MovePlayerPos / MovePlayerRot are separate ids). Requiring both
-      // meant a player who happened to be moving without turning drained nothing, so the teleport
-      // stayed queued and every one of their updates fell into the branch below, which sends a
-      // packet with no position in it at all. From the server's point of view the player had
-      // stopped dead.
-      //
-      // Neither field is actually needed to answer: the reply carries the TELEPORT's coordinates
-      // and the last known rotation, both of which are already in hand.
-      if (hasPos || hasRot) {
+      if (hasPos && hasRot) {
         Vec3d coords = session.consumePendingTeleport();
         Vec2f teleportRot = lastRot;
         session.setLastPos(new Vec3d(javaX, javaY, javaZ));

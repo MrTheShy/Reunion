@@ -520,7 +520,6 @@ public final class ConsoleSession {
    * and acknowledging a superseded position would invite the very correction that caused the pile-up.
    */
   public void storePendingTeleport(double x, double y, double z) {
-    pendingTeleports.clear();
     pendingTeleports.add(new Vec3d(x, y, z));
   }
 
