@@ -220,7 +220,12 @@ public final class McConsolesControlChannel {
         }
         // DNS and the ping both block for seconds against an unreachable host. Doing them on the
         // reader thread would stall every other control message behind one dead address.
-        Thread.ofVirtual().name("mcc-probe-" + host).start(() -> {
+        // A PLATFORM thread, deliberately, where everything else here uses virtual ones. The
+        // status parser goes through fastjson2, whose caches are keyed per thread and are not
+        // built for a population of short-lived virtual threads; the failure that prompted this
+        // was an ArrayIndexOutOfBoundsException raised inside that layer. Probes are rare - one
+        // per address every five minutes - so a real thread costs nothing here.
+        Thread.ofPlatform().name("mcc-probe-" + host).daemon().start(() -> {
           ServerPinger.Status st = ServerPinger.status(host, port);
           JSONObject d = new JSONObject();
           d.put("host", host);

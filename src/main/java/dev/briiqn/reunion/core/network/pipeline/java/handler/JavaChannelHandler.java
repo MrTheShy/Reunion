@@ -49,6 +49,16 @@ public final class JavaChannelHandler extends ChannelInboundHandlerAdapter {
   private final JavaLoginHandler loginHandler;
   private boolean playPhase = false;
 
+  // MinecraftConsoles fork: a trace of what the backend actually said before it went away.
+  //
+  // A server that closes the socket without a disconnect packet leaves nothing behind: the log
+  // says "Server closed", which is our own default string and not something the server told us.
+  // Hypixel does exactly that a second after accepting the login, and there is no way to tell
+  // "it sent us a world and then dropped us" from "it never sent anything at all" without
+  // counting. Cheap enough to leave on: one counter and a line per disconnect.
+  private int playPacketsSeen = 0;
+  private long playPhaseStartedAt = 0L;
+
   public JavaChannelHandler(JavaSession session) {
     this.session = session;
     this.cs = session.getConsoleSession();
@@ -68,6 +78,10 @@ public final class JavaChannelHandler extends ChannelInboundHandlerAdapter {
     session.shutdownPacketProcessor();
     log.warn("[Disconnect] Java backend lost for {}. Reason: '{}', Switching: {}",
         cs.getPlayerName(), session.getDisconnectReason(), session.isSwitching());
+    log.warn("[Disconnect] play phase: {} packet(s) in {} ms{}",
+        playPacketsSeen,
+        playPhaseStartedAt == 0L ? 0 : System.currentTimeMillis() - playPhaseStartedAt,
+        playPhaseStartedAt == 0L ? " (never reached the play phase)" : "");
 
     Channel consoleChannel = cs.getConsoleChannel();
     if (consoleChannel == null || !consoleChannel.isActive()) {
@@ -113,6 +127,12 @@ public final class JavaChannelHandler extends ChannelInboundHandlerAdapter {
 
     if (!playPhase && raw.id() == 0x02) {
       playPhase = true;
+      playPhaseStartedAt = System.currentTimeMillis();
+    }
+
+    if (wasPlay && ++playPacketsSeen <= 24) {
+      log.info("[Java<-] play packet #{} id=0x{}", playPacketsSeen,
+          Integer.toHexString(raw.id()));
     }
 
     if (wasPlay && (raw.id() == 0x00 || raw.id() == 0x40)) {

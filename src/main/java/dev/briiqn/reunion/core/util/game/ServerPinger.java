@@ -149,21 +149,50 @@ public final class ServerPinger {
         return Status.unreachable("unexpected packet id " + packetId);
       }
 
-      JSONObject root = JSON.parseObject(readString(responseBuf));
-      if (root == null) {
-        return Status.unreachable("unparsable status response");
+      // Past this point the server IS reachable and IS speaking the Java protocol: it completed a
+      // status exchange, which nothing else does. Everything below is decoration, and a failure to
+      // decode the decoration must NOT be reported as unreachable.
+      //
+      // That distinction is not academic. "Unreachable" is what the game uses to decide an address
+      // is not a Java server, so it would then dial it directly, speak LCE at a Java server and
+      // fail with an unrelated error. It happened: a server whose status JSON tripped the parser
+      // was reported unreachable and the join went straight there, ending in "Failed to receive
+      // small ID assignment" - a message about a completely different layer.
+      String motd = "";
+      String versionName = "";
+      int protocol = -1;
+      int online = 0;
+      int max = 0;
+      String note = "";
+
+      try {
+        JSONObject root = JSON.parseObject(readString(responseBuf));
+        if (root != null) {
+          JSONObject version = root.getJSONObject("version");
+          if (version != null) {
+            String vn = version.getString("name");
+            versionName = vn == null ? "" : vn;
+            protocol = version.getIntValue("protocol", -1);
+          }
+
+          JSONObject players = root.getJSONObject("players");
+          if (players != null) {
+            online = players.getIntValue("online");
+            max = players.getIntValue("max");
+          }
+
+          motd = flattenDescription(root.get("description"));
+        }
+      } catch (Throwable t) {
+        // Throwable, not Exception: this has thrown ArrayIndexOutOfBoundsException from inside the
+        // JSON layer on a real server, and an Error escaping here would turn a cosmetic problem
+        // into a server that cannot be joined.
+        note = "status decoded partially: " + t;
+        log.warn("[ServerPinger] {}:{} answered but its status could not be read: {}",
+            connectHost, connectPort, t.toString());
       }
 
-      JSONObject version = root.getJSONObject("version");
-      String versionName = version != null ? version.getString("name") : "";
-      int protocol = version != null ? version.getIntValue("protocol", -1) : -1;
-
-      JSONObject players = root.getJSONObject("players");
-      int online = players != null ? players.getIntValue("online") : 0;
-      int max = players != null ? players.getIntValue("max") : 0;
-
-      return new Status(true, flattenDescription(root.get("description")), online, max,
-          versionName == null ? "" : versionName, protocol, latency, "");
+      return new Status(true, motd, online, max, versionName, protocol, latency, note);
 
     } catch (IOException e) {
       log.debug("[ServerPinger] Failed to ping {}:{}  {}", connectHost, connectPort,
