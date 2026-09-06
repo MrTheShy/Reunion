@@ -74,9 +74,22 @@ public final class ConsoleMovePlayerPosRotS2CPacket extends ConsoleS2CPacket {
     double feetY = position.y();
     double stanceY = feetY + EYE_HEIGHT;
 
+    // MinecraftConsoles fork: feet in the second field, eyes in the third - the order the client
+    // actually reads, which is the same one it uses when it sends.
+    //
+    // These two were the other way round, so every teleport placed the player 1.62 blocks above
+    // where the server had put them. The client then fell, reported a position the server had not
+    // authorised, and was corrected - which teleported it 1.62 blocks up again. Measured on a live
+    // session before the fix: 297 teleports in 196 seconds, with the correction distance sitting
+    // at 1.31 to 2.16 blocks, centred on the eye height plus whatever horizontal movement had
+    // happened in between. It also accounts for the reported "flash somewhere else and snap back".
+    //
+    // The client's own handler settles the order beyond argument: it assigns the second field
+    // straight into the position it moves to, and when it answers it puts the bounding box floor
+    // back in that same field and the eye position in the third.
     buf.writeDouble(position.x());
-    buf.writeDouble(stanceY);
     buf.writeDouble(feetY);
+    buf.writeDouble(stanceY);
     buf.writeDouble(position.z());
     buf.writeFloat(yaw);
     buf.writeFloat(pitch);
