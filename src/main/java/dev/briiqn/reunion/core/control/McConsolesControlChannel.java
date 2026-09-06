@@ -19,6 +19,7 @@ package dev.briiqn.reunion.core.control;
 
 import com.alibaba.fastjson2.JSONObject;
 import dev.briiqn.reunion.core.ReunionServer;
+import dev.briiqn.reunion.core.util.game.ServerPinger;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -193,6 +194,51 @@ public final class McConsolesControlChannel {
         server.getConfig().getConnection().setJavaPort(port);
         log.info("[Control] target Java server set to {}:{}", host, port);
         status("configured", host + ":" + port);
+
+        // The ack is what makes this usable from a join flow. The game sends server.select and
+        // then opens an LCE connection, but those are two different sockets: nothing orders the
+        // second against the first, so without a reply the client could arrive before the target
+        // had changed and land on the PREVIOUS server. Waiting for this frame removes the race.
+        JSONObject ack = new JSONObject();
+        ack.put("host", host);
+        ack.put("port", port);
+        ack.put("ok", true);
+        // Echoed back so the game can tell an ack for the server it just asked for from a late
+        // ack for one it has since changed its mind about.
+        ack.put("requestSeq", msg.getIntValue("seq"));
+        send("server.selected", ack);
+      }
+      case "server.probe" -> {
+        if (data == null) {
+          return;
+        }
+        String host = data.getString("host");
+        Integer port = data.getInteger("port");
+        if (host == null || host.isEmpty() || port == null) {
+          log.warn("[Control] server.probe with no host/port - ignored");
+          return;
+        }
+        // DNS and the ping both block for seconds against an unreachable host. Doing them on the
+        // reader thread would stall every other control message behind one dead address.
+        Thread.ofVirtual().name("mcc-probe-" + host).start(() -> {
+          ServerPinger.Status st = ServerPinger.status(host, port);
+          JSONObject d = new JSONObject();
+          d.put("host", host);
+          d.put("port", port);
+          d.put("online", st.reachable());
+          d.put("motd", st.motd());
+          d.put("players", st.players());
+          d.put("maxPlayers", st.maxPlayers());
+          d.put("version", st.versionName());
+          d.put("protocol", st.protocol());
+          d.put("latencyMs", st.latencyMs());
+          d.put("error", st.error());
+          send("server.info", d);
+          log.info("[Control] probe {}:{} -> {}", host, port,
+              st.reachable()
+                  ? st.versionName() + " " + st.players() + "/" + st.maxPlayers()
+                  : "unreachable (" + st.error() + ")");
+        });
       }
       case "proxy.shutdown" -> {
         log.info("[Control] shutdown requested by the game");

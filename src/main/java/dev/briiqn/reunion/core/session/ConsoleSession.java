@@ -42,6 +42,8 @@ import dev.briiqn.reunion.core.plugin.hooks.PluginEventHooks;
 import dev.briiqn.reunion.core.plugin.session.ConsoleSessionPlayerAdapter;
 import dev.briiqn.reunion.core.util.container.CraftingTranslator;
 import dev.briiqn.reunion.core.util.container.InventoryTracker;
+import dev.briiqn.reunion.core.util.game.ServerPinger;
+import dev.briiqn.reunion.core.util.game.SrvResolver;
 import dev.briiqn.reunion.core.util.math.vector.Vec2f;
 import dev.briiqn.reunion.core.util.math.vector.Vec3d;
 import io.netty.bootstrap.Bootstrap;
@@ -138,6 +140,21 @@ public final class ConsoleSession {
   private volatile UUID lceClientUuid = null;
   @Setter
   private volatile String lceClientMojangUuid = null;
+
+  // The name on the Mojang account the client authenticated as, which is NOT always playerName:
+  // playerName is the gamertag the LCE side shows, while an online-mode Java server looks up
+  // exactly this string at hasJoined against the join the client itself performed. Sending the
+  // wrong one of the two is an authentication failure, not a cosmetic difference.
+  //
+  // Both this and lceClientMojangUuid arrive with the PRE-login, not the login. That ordering is
+  // the whole reason online-mode works: the Java connection is opened from the pre-login handler,
+  // so anything the login carries arrives too late to influence the name we send in LoginStart -
+  // and the client will not send its login until we hand it an auth scheme, which we cannot do
+  // until the Java server asks us to encrypt. Carrying the identity earlier is what breaks that
+  // circle.
+  @Setter
+  private volatile String lceAuthName = null;
+
   @Setter
   private boolean loggedIn = false;
   private int javaEntityId = -1;
@@ -299,6 +316,46 @@ public final class ConsoleSession {
     final String finalHost = host;
     final int finalPort = port;
 
+    // MinecraftConsoles fork: DNS and the status ping both block, and this runs on the console
+    // channel's event loop. Doing them inline would stall every other session on that loop for as
+    // long as the slowest resolver takes. The connect itself is async and needs no thread.
+    Thread.ofVirtual().name("java-connect-" + playerName).start(
+        () -> resolveThenConnect(finalHost, finalPort));
+  }
+
+  /**
+   * MinecraftConsoles fork: resolves the backend address the way a vanilla client would, then
+   * dials it.
+   *
+   * <p>Two results come out of the resolution and they are NOT the same thing. The endpoint says
+   * where the socket goes; the handshake keeps the address the player typed, because that string
+   * is what virtual-host routing keys on. See {@link SrvResolver}.
+   *
+   * <p>The status ping is what makes an arbitrary server work rather than only a 1.8 one: the
+   * proxy speaks protocol 47 natively, so anything newer has to be translated, and ViaVersion
+   * needs to be told which version it is translating TO. Doing it per connection rather than once
+   * at startup is what lets the target change while the game is running, which is the entire
+   * point of being able to pick a server from the menu.
+   */
+  private void resolveThenConnect(String host, int port) {
+    SrvResolver.Endpoint ep = SrvResolver.resolve(host, port, port != 25565);
+
+    com.viaversion.viaversion.api.protocol.version.ProtocolVersion backendVersion = null;
+    if (dev.briiqn.reunion.core.via.ViaManager.isEnabled()) {
+      backendVersion = ServerPinger.detect(ep.connectHost(), ep.connectPort());
+      if (backendVersion == null) {
+        // Not fatal. A server that refuses status pings (some do) still accepts a login, and the
+        // configured fallback in ReunionViaLoader is the right answer for it.
+        log.warn("[Java] could not detect the version of {}:{} - using the configured fallback",
+            ep.connectHost(), ep.connectPort());
+      } else {
+        log.info("[Java] {}:{} speaks {}", ep.connectHost(), ep.connectPort(),
+            backendVersion.getName());
+      }
+    }
+    final com.viaversion.viaversion.api.protocol.version.ProtocolVersion resolvedVersion =
+        backendVersion;
+
     Bootstrap b = new Bootstrap();
     b.group(consoleChannel.eventLoop())
         .channel(Epoll.isAvailable() ? EpollSocketChannel.class : NioSocketChannel.class)
@@ -306,11 +363,17 @@ public final class ConsoleSession {
         .handler(new ChannelInitializer<SocketChannel>() {
           @Override
           protected void initChannel(SocketChannel ch) {
+            if (resolvedVersion != null) {
+              // Read back by ReunionViaLoader's VersionProvider. It has to be set before the
+              // pipeline is built, which is exactly what initChannel guarantees.
+              ch.attr(dev.briiqn.reunion.core.network.server.ServerSwitchHandler.BACKEND_VERSION)
+                  .set(resolvedVersion);
+            }
             ServerConnector.initJavaPipeline(ch, ConsoleSession.this);
           }
         });
 
-    b.connect(host, port).addListener((ChannelFuture f) -> {
+    b.connect(ep.connectHost(), ep.connectPort()).addListener((ChannelFuture f) -> {
       if (f.isSuccess()) {
         if (!consoleChannel.isActive()) {
           f.channel().close();
@@ -318,9 +381,11 @@ public final class ConsoleSession {
         }
         JavaSession session = f.channel().attr(JavaSession.SESSION_KEY).get();
         this.javaSession = session;
-        session.sendHandshake(playerName, finalHost, finalPort);
+        session.sendHandshake(playerName, ep.handshakeHost(), ep.handshakePort());
       } else {
-        log.error("[Disconnect] Failed to connect {} to Java server", playerName);
+        log.error("[Disconnect] Failed to connect {} to {}:{} ({})", playerName,
+            ep.connectHost(), ep.connectPort(),
+            f.cause() == null ? "unknown" : f.cause().getMessage());
         PacketManager.send(consoleChannel,
             new dev.briiqn.reunion.core.network.packet.protocol.console.s2c.impl
                 .ConsoleDisconnectS2CPacket(), 39);

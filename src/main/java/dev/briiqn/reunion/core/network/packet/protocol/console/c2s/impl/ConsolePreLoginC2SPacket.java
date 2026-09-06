@@ -30,12 +30,18 @@ import dev.briiqn.reunion.core.plugin.hooks.PluginEventHooks;
 import dev.briiqn.reunion.core.session.ConsoleSession;
 import io.netty.buffer.ByteBuf;
 import java.net.InetSocketAddress;
+import lombok.extern.log4j.Log4j2;
 
-@PacketInfo(side = PacketSide.CONSOLE_C2S, id = 2, supports = {39, 78})
+@Log4j2
+@PacketInfo(side = PacketSide.CONSOLE_C2S, id = 2, supports = {39, 78, 80})
 public final class ConsolePreLoginC2SPacket extends ConsoleC2SPacket {
 
   private int clientVersion;
   private String playerName;
+  // MinecraftConsoles fork, protocol 80: the Java identity the client's own auth manager resolved.
+  // Empty on 39/78, which have no such fields.
+  private String mojangUuid = "";
+  private String authName = "";
 
   public ConsolePreLoginC2SPacket() {
   }
@@ -50,13 +56,31 @@ public final class ConsolePreLoginC2SPacket extends ConsoleC2SPacket {
 
     int playerCount = buf.readUnsignedByte();
     for (int i = 0; i < playerCount; i++) {
+      // A PlayerUID is 8 bytes up to protocol 78 and 16 from 80 on - the same widening that made
+      // LoginPacket's two XUIDs into one 128-bit id. Reading the wrong width here desyncs the rest
+      // of the packet, and it goes unnoticed because a single player joining sends zero ids.
       buf.readLong();
+      if (clientVersion >= 80) {
+        buf.readLong();
+      }
     }
 
     buf.skipBytes(14); // szUniqueSaveName
     buf.readInt();     // serverSettings
     buf.readByte();    // hostIndex
     buf.readInt();     // texturePackId
+
+    // ---- MinecraftConsoles fork: protocol 80 ------------------------------------------------
+    // The client's Java identity, carried on the FIRST packet rather than the login. See the note
+    // on ConsoleSession.lceAuthName for why the login would be too late: the Java connection is
+    // opened from this very handler.
+    //
+    // Consuming these is not optional. ConsoleConnectionHandler loops while the frame is readable,
+    // so bytes left behind would be parsed as the next packet's id and take the connection down.
+    if (clientVersion >= 80) {
+      mojangUuid = readConsoleUtf(buf);
+      authName = readConsoleUtf(buf);
+    }
   }
 
   @Override
@@ -67,6 +91,24 @@ public final class ConsolePreLoginC2SPacket extends ConsoleC2SPacket {
   public void handle(ConsoleSession session) {
     session.setClientVersion(clientVersion);
     session.setPlayerName(playerName);
+
+    // ---- MinecraftConsoles fork: protocol 80 ------------------------------------------------
+    // Must land before initiateJavaConnection() below, which is the whole reason these travel on
+    // the pre-login. Both are needed together and mean different things: the uuid decides WHETHER
+    // to relay the encryption handshake to the client, the name decides what we put in LoginStart
+    // and therefore which account the Java server checks at hasJoined.
+    if (clientVersion >= 80) {
+      if (mojangUuid != null && !mojangUuid.isEmpty()) {
+        session.setLceClientMojangUuid(mojangUuid);
+      }
+      if (authName != null && !authName.isEmpty()) {
+        session.setLceAuthName(authName);
+      }
+      log.info("[Console] pre-login from protocol {} client '{}' (java identity: {} / {})",
+          clientVersion, playerName,
+          authName == null || authName.isEmpty() ? "<none>" : authName,
+          mojangUuid == null || mojangUuid.isEmpty() ? "<none>" : mojangUuid);
+    }
 
     if (session.getServer().getSessions().size() >= session.getServer().getConfig().getGameplay().getMaxPlayers()) {
       PacketManager.sendToConsole(session, new ConsoleDisconnectS2CPacket());

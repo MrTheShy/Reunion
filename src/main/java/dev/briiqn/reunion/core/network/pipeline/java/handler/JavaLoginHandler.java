@@ -107,7 +107,34 @@ public final class JavaLoginHandler {
     });
   }
 
+  /**
+   * MinecraftConsoles fork: true when this client brought its own Java account and therefore
+   * expects the auth handshake (packets 170/171/172) rather than the stock LCE login.
+   */
+  private boolean isAuthRelayClient() {
+    return cs.getClientVersion() >= 80 && cs.getLceClientMojangUuid() != null
+        && !cs.getLceClientMojangUuid().isEmpty();
+  }
+
   private void handleLoginSuccess(ByteBuf buf) {
+    // ---- MinecraftConsoles fork ---------------------------------------------------------------
+    // Reaching LoginSuccess without having sent a scheme means the Java server is in offline mode:
+    // it never asked us to encrypt, so handleEncryptionRequest never ran. A protocol-80 client is
+    // sitting on its pre-login waiting for a scheme it would now wait for forever, because there
+    // is no longer anything left in the login sequence to produce one.
+    //
+    // Offer it "offline". The client answers with the scheme it can satisfy and finishes its own
+    // handshake, which is what makes an offline-mode server behave like any other rather than like
+    // a server that half-connects.
+    if (isAuthRelayClient() && !schemeSent) {
+      schemeSent = true;
+      log.info("[Auth-Relay] {} is offline mode - offering the 'offline' scheme to '{}'",
+          cs.getCurrentServer() == null ? "the backend" : cs.getCurrentServer(),
+          cs.getPlayerName());
+      PacketManager.sendToConsole(cs,
+          new ConsoleAuthSchemeS2CPacket(java.util.List.of("offline"), ""));
+    }
+
     try {
       String uuidStr = StringUtil.readJavaString(buf.duplicate());
       String javaName = StringUtil.readJavaString(buf.duplicate());
@@ -225,11 +252,6 @@ public final class JavaLoginHandler {
         PublicKey publicKey = KeyFactory.getInstance("RSA")
             .generatePublic(new X509EncodedKeySpec(pubKeyBytes));
 
-        JavaAuthManager auth = AuthUtil.getSession();
-        String accessToken = auth.getMinecraftToken().getUpToDate().getToken();
-        String uuid = auth.getMinecraftProfile().getUpToDate().getId()
-            .toString().replace("-", "");
-
         MessageDigest digest = MessageDigest.getInstance("SHA-1");
         digest.update(serverId.getBytes(StandardCharsets.ISO_8859_1));
         digest.update(secretKey.getEncoded());
@@ -245,15 +267,30 @@ public final class JavaLoginHandler {
         // own.
         //
         // The Java handshake is suspended here and resumed in onConsoleAuthResponse().
-        if (cs.getClientVersion() >= 80 && cs.getLceClientMojangUuid() != null
-            && !cs.getLceClientMojangUuid().isEmpty()) {
+        //
+        // This check MUST come before anything that touches the proxy's own account, and it did
+        // not: AuthUtil.getSession() used to be called a few lines above, to fetch a token only
+        // the non-relay branch ever uses. When the proxy has no account of its own that call opens
+        // an interactive Microsoft device-code login and blocks on it forever, so the relay below
+        // was never reached and every join to an online-mode server ended in a timeout - with a
+        // sign-in code printed to a console log nobody was reading. Nothing in the relay path
+        // needs the proxy's identity: the hash above is computed from the server's own values.
+        if (isAuthRelayClient()) {
           this.pending = new PendingEncryption(ctx, secretKey, publicKey, verifyToken);
+          this.schemeSent = true;
           log.info("[Auth-Relay] asking LCE client '{}' to authenticate itself (uuid={})",
               cs.getPlayerName(), cs.getLceClientMojangUuid());
           PacketManager.sendToConsole(cs,
               new ConsoleAuthSchemeS2CPacket(java.util.List.of("mojang"), hash));
           return;
         }
+
+        // Only from here on is the proxy authenticating as ITSELF, which is the only case that
+        // has any business asking for its credentials.
+        JavaAuthManager auth = AuthUtil.getSession();
+        String accessToken = auth.getMinecraftToken().getUpToDate().getToken();
+        String uuid = auth.getMinecraftProfile().getUpToDate().getId()
+            .toString().replace("-", "");
 
         com.alibaba.fastjson2.JSONObject payload = new com.alibaba.fastjson2.JSONObject();
         payload.put("accessToken", accessToken);
@@ -292,6 +329,13 @@ public final class JavaLoginHandler {
   private volatile PendingEncryption pending;
 
   /**
+   * Whether an auth scheme has already gone to the client on this connection. Exactly one is ever
+   * sent, and which one depends on how the Java server behaved: "mojang" with a real hash if it
+   * asked us to encrypt, "offline" if it went straight to LoginSuccess.
+   */
+  private volatile boolean schemeSent;
+
+  /**
    * Resumes the suspended Java encryption handshake once the LCE client has posted to
    * sessionserver/join with its own token. Called from ConsoleAuthResponseC2SPacket.
    *
@@ -304,6 +348,19 @@ public final class JavaLoginHandler {
     this.pending = null;
 
     if (p == null) {
+      // No handshake parked means we offered "offline" from handleLoginSuccess: the Java server
+      // is in offline mode and there is nothing to resume. The client is nonetheless waiting for
+      // a result before it considers itself logged in, so answer it - dropping the exchange here
+      // would leave it in the game but with no identity of its own.
+      if ("offline".equals(chosenScheme)) {
+        log.info("[Auth-Relay] '{}' accepted the offline scheme", cs.getPlayerName());
+        PacketManager.sendToConsole(cs, new ConsoleAuthResultS2CPacket(
+            true,
+            cs.getLceClientMojangUuid() == null ? "" : cs.getLceClientMojangUuid(),
+            username == null || username.isEmpty() ? cs.getPlayerName() : username,
+            ""));
+        return;
+      }
       log.warn("[Auth-Relay] auth response from '{}' with no handshake in flight - ignored",
           cs.getPlayerName());
       return;
@@ -406,11 +463,16 @@ public final class JavaLoginHandler {
     // carry THAT player's name. The Java server looks up exactly this name at hasJoined, against
     // the join the client itself performed - send the proxy's profile name here and the server
     // would check an account nobody authenticated. cs.getPlayerName() is the name the client's
-    // auth manager chose (ClientConnection::sendLoginPacketAfterAuth), and is deliberately not
-    // given the configured player prefix.
+    // auth manager chose, and is deliberately not given the configured player prefix.
+    //
+    // lceAuthName is preferred over playerName because they are not always the same string: the
+    // gamertag shown on the LCE side can differ from the name on the Mojang account, and it is the
+    // account name the server looks up at hasJoined. Both arrive with the PRE-login, which is what
+    // makes them available here at all - see ConsoleSession.lceAuthName.
     if (cs.getClientVersion() >= 80 && cs.getLceClientMojangUuid() != null
         && !cs.getLceClientMojangUuid().isEmpty()) {
-      return cs.getPlayerName();
+      String authName = cs.getLceAuthName();
+      return authName != null && !authName.isEmpty() ? authName : cs.getPlayerName();
     }
     if (server.getConfig().getAuth().isOnlineMode() && AuthUtil.hasSession()) {
       try {

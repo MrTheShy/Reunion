@@ -33,5 +33,10 @@ network:
       port: 25564
 
 via:
-  enabled: false # enable translation for newer java versions
-  target-version: "auto" # backend server version or "auto" to ping it
+  # MinecraftConsoles fork: on by default. The proxy speaks protocol 47 (1.8.9) natively, so
+  # without this it can only reach a 1.8 server - and the game can now pick any server from its
+  # own menu, so the backend is not something a default can assume. The target is detected per
+  # connection (ConsoleSession.resolveThenConnect), not once at startup, which is what lets it
+  # change while the game is running.
+  enabled: true # enable translation for newer java versions
+  target-version: "auto" # fallback only; each connection pings its own backend
