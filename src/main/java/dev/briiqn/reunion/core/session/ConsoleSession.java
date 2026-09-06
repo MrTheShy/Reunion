@@ -528,8 +528,10 @@ public final class ConsoleSession {
   // wrong one. This says which, with the state that kept it there.
   //
   // Pure instrumentation: nothing here changes what is sent.
-  @Getter(AccessLevel.NONE)
   private int movementStallPackets = 0;
+
+  /** Longest run of swallowed movement packets tolerated before the fail-safe fires. */
+  public static final int MAX_SWALLOWED_PACKETS = 20;
 
   /** Called when a movement packet was dropped without its position reaching the server. */
   public void noteMovementStall(String branch, boolean hasPos, boolean hasRot) {

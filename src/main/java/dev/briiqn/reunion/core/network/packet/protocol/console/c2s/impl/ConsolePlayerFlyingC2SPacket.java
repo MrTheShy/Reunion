@@ -120,13 +120,42 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
       return;
     }
 
+    // MinecraftConsoles fork: this branch is where movement was being lost, and the diagnostic
+    // said so outright - every stall sampled reported branch=teleport-ack with an EMPTY teleport
+    // queue, so the queue was never the problem (an earlier attempt at a fix assumed it was, and
+    // was reverted). The counter alone was doing it, and it went 2 -> 4 -> 7 rather than draining.
+    //
+    // Two reasons it could not drain:
+    //
+    //  * The decrement was gated on hasPos || hasRot. Three of the five sampled packets had
+    //    NEITHER - a bare flying packet carries only onGround - so they passed through this branch
+    //    consuming a slot's worth of the player's movement while clearing nothing.
+    //  * While suppressing we answer with a packet that has no position in it. The server's view
+    //    of the player therefore never advances, so it keeps correcting, and every correction adds
+    //    another ack. The suppression was feeding the thing it was waiting on.
+    //
+    // The counter still exists and still does its job: it is a grace period so the client's first
+    // few post-teleport packets, which still report the OLD position, are not mistaken for the
+    // player refusing the teleport. What changes is that it now always drains - one slot per
+    // packet, whatever that packet carries - and that it can no longer run unbounded.
+    //
+    // The cap is the part that matters most, and it is deliberately not clever. Whatever else is
+    // or is not understood about this handshake, a client cannot be prevented from moving for more
+    // than one second: past that the grace period is abandoned and the player's real position goes
+    // through. Being wrong here should cost a hiccup, not eight seconds of paralysis.
     if (session.getPendingTeleportAcks().get() > 0) {
-      if (hasPos || hasRot) {
+      if (session.getMovementStallPackets() >= ConsoleSession.MAX_SWALLOWED_PACKETS) {
+        log.warn("[MOVE-STALL] grace period abandoned after {} packet(s), {} ack(s) outstanding - "
+                + "forwarding the player's real position",
+            session.getMovementStallPackets(), session.getPendingTeleportAcks().get());
+        session.getPendingTeleportAcks().set(0);
+        // and fall through to the normal path below
+      } else {
         session.getPendingTeleportAcks().decrementAndGet();
+        PacketManager.sendToJava(session.getJavaSession(), new JavaPlayerC2SPacket(onGround));
+        session.noteMovementStall("teleport-ack", hasPos, hasRot);
+        return;
       }
-      PacketManager.sendToJava(session.getJavaSession(), new JavaPlayerC2SPacket(onGround));
-      session.noteMovementStall("teleport-ack", hasPos, hasRot);
-      return;
     }
 
     if (hasPos || hasRot) {
