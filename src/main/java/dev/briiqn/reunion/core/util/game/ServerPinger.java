@@ -20,6 +20,7 @@ import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.viaversion.viaversion.api.protocol.version.ProtocolVersion;
+import dev.briiqn.reunion.core.session.JavaSession;
 import dev.briiqn.reunion.core.util.VarIntUtil;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
@@ -106,7 +107,21 @@ public final class ServerPinger {
 
       ByteBuf handshake = Unpooled.buffer();
       VarIntUtil.write(handshake, 0x00);
-      VarIntUtil.write(handshake, ProtocolVersion.v26_1.getVersion());
+      // MinecraftConsoles fork: ask as the version we ACTUALLY speak, not as a modern one.
+      //
+      // A status reply is not a statement of fact, it is an answer to the version you asked
+      // about: a server behind ViaVersion echoes the protocol you requested when it can serve it,
+      // and only names its own when it cannot. Asking with a hardcoded modern number therefore
+      // made "auto" detection self-fulfilling - every Via-enabled backend came back as that same
+      // modern version, and the proxy dutifully translated 47 into it.
+      //
+      // Measured on two public servers: asking play.cubecraft.net for 765 reports 765, asking for
+      // 47 or -1 reports 340. Same server, three answers.
+      //
+      // Asking as protocol 47 makes the reply mean something useful: echo 47 back and the server
+      // accepts us as we are, so the translation is a no-op and we take the best tested path
+      // (Hypixel accepts 1.8 natively). Anything else is the version we have to translate TO.
+      VarIntUtil.write(handshake, JavaSession.JAVA_PROTOCOL);
       writeString(handshake, handshakeHost);
       handshake.writeShort(handshakePort);
       VarIntUtil.write(handshake, 1);

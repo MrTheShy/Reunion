@@ -177,9 +177,22 @@ public final class ReunionServer {
     int port = config.getConnection().getListenPort();
     tcpServerChannel = sb.bind(port).sync().channel();
 
-    lanBroadcaster = new LCEMPLANBroadcaster(workerGroup, config.getConnection().getJavaHost(),
-        port);
-    lanBroadcaster.start();
+    // MinecraftConsoles fork: the LAN advert is how a standalone proxy makes itself findable from
+    // a console's session browser, and it stays exactly that. But when the GAME launched us it
+    // already has its own list of saved servers, and this advert appears in that same list as a
+    // second, extra row named after whatever backend happens to be configured right now.
+    //
+    // That row is not merely redundant, it is a trap: joining it connects straight to the proxy
+    // without the game ever sending server.select, so the player lands on the previously selected
+    // backend rather than the one whose name they just clicked - and the name on the row makes it
+    // look like it worked.
+    if (Config.LAUNCHED_BY_GAME) {
+      log.info("LAN advert disabled: the game keeps its own server list.");
+    } else {
+      lanBroadcaster = new LCEMPLANBroadcaster(workerGroup, config.getConnection().getJavaHost(),
+          port);
+      lanBroadcaster.start();
+    }
 
     log.info("Listening on :" + port);
     new Thread(console::start, "reunion-console").start();

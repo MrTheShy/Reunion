@@ -348,9 +348,16 @@ public final class ConsoleSession {
         // configured fallback in ReunionViaLoader is the right answer for it.
         log.warn("[Java] could not detect the version of {}:{} - using the configured fallback",
             ep.connectHost(), ep.connectPort());
+      } else if (backendVersion.getVersion() == JavaSession.JAVA_PROTOCOL) {
+        // The server answered our own protocol back, so it accepts us as we are. Via still sits in
+        // the pipeline but translates 47 into 47, which is a no-op - and that is the best tested
+        // path there is, since it is the one the proxy was written for.
+        log.info("[Java] {}:{} accepts protocol {} directly - no translation",
+            ep.connectHost(), ep.connectPort(), JavaSession.JAVA_PROTOCOL);
       } else {
-        log.info("[Java] {}:{} speaks {}", ep.connectHost(), ep.connectPort(),
-            backendVersion.getName());
+        log.info("[Java] {}:{} speaks {} - translating from protocol {}",
+            ep.connectHost(), ep.connectPort(), backendVersion.getName(),
+            JavaSession.JAVA_PROTOCOL);
       }
     }
     final com.viaversion.viaversion.api.protocol.version.ProtocolVersion resolvedVersion =

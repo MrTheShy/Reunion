@@ -65,18 +65,40 @@ public final class JavaSession {
     return new JavaChannelHandler(this);
   }
 
-  // MinecraftConsoles fork: the login handler used to be created and dropped on the floor here.
-  // The protocol-80 auth relay needs to reach it again later: the Java server's encryption
-  // handshake is suspended mid-flight while the LCE client proves ownership of its own Mojang
-  // account, and ConsoleAuthResponseC2SPacket has to resume THIS connection's handler when the
-  // answer comes back. Kept as a field for exactly that.
-  @Getter
+  // MinecraftConsoles fork: exactly ONE login handler per Java connection, owned here.
+  //
+  // The protocol-80 auth relay suspends the Java encryption handshake mid-flight while the LCE
+  // client proves ownership of its own Mojang account, so the parked state lives on this object
+  // and ConsoleAuthResponseC2SPacket has to reach the very same one to resume it.
+  //
+  // It used to be created twice - once here and once inside JavaChannelHandler - and that was
+  // silent and fatal: the channel handler parked the encryption state on ITS copy, the auth
+  // response was delivered to THIS one, and the second always had nothing in flight. The symptom
+  // was a join that hung with a single "auth response with no handshake in flight" line and no
+  // error anywhere. Created eagerly rather than in sendHandshake() because the channel handler is
+  // built first, when the pipeline is set up.
+  //
+  // Created on first use rather than in a field initializer: field initializers run BEFORE the
+  // generated constructor body, so `new JavaLoginHandler(this)` there would read consoleSession
+  // and server while they are still null and hand every join a handler wired to nothing.
   private volatile JavaLoginHandler loginHandler;
 
+  public JavaLoginHandler getLoginHandler() {
+    JavaLoginHandler handler = loginHandler;
+    if (handler == null) {
+      synchronized (this) {
+        handler = loginHandler;
+        if (handler == null) {
+          handler = new JavaLoginHandler(this);
+          loginHandler = handler;
+        }
+      }
+    }
+    return handler;
+  }
+
   public void sendHandshake(String playerName, String host, int port) {
-    JavaLoginHandler handler = new JavaLoginHandler(this);
-    this.loginHandler = handler;
-    handler.sendHandshake(host, port);
+    getLoginHandler().sendHandshake(host, port);
   }
 
   public void submitPacket(Runnable task) {

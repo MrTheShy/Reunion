@@ -53,7 +53,8 @@ public final class JavaChannelHandler extends ChannelInboundHandlerAdapter {
     this.session = session;
     this.cs = session.getConsoleSession();
     this.server = session.getServer();
-    this.loginHandler = new JavaLoginHandler(session);
+    // MinecraftConsoles fork: the session's handler, never a second one. See JavaSession.
+    this.loginHandler = session.getLoginHandler();
   }
 
   @Override

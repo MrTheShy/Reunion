@@ -33,6 +33,7 @@ import dev.briiqn.reunion.core.util.StringUtil;
 import dev.briiqn.reunion.core.util.VarIntUtil;
 import dev.briiqn.reunion.core.util.auth.AuthUtil;
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
 import java.math.BigInteger;
@@ -116,6 +117,27 @@ public final class JavaLoginHandler {
         && !cs.getLceClientMojangUuid().isEmpty();
   }
 
+  /**
+   * MinecraftConsoles fork: re-opens reading on the console socket before we ask the client a
+   * question.
+   *
+   * <p>{@code initiateJavaConnection()} sets autoRead(false) and only {@code onJoinGame()} sets it
+   * back, which is right for gameplay - it stops the console flooding us before a world exists.
+   * It is fatal for the auth exchange: onJoinGame cannot happen until the login completes, the
+   * login cannot complete without the client's answer, and with reading disabled that answer sits
+   * unread in the kernel buffer forever. The scheme goes out, the client replies, and nothing
+   * happens - no error anywhere, because nobody is listening.
+   *
+   * <p>Reading early is safe: at this point the client sends its auth response and then its login
+   * packet, and both are handled without needing a world.
+   */
+  private void openConsoleForReply() {
+    Channel ch = cs.getConsoleChannel();
+    if (ch != null && ch.isActive()) {
+      ch.config().setAutoRead(true);
+    }
+  }
+
   private void handleLoginSuccess(ByteBuf buf) {
     // ---- MinecraftConsoles fork ---------------------------------------------------------------
     // Reaching LoginSuccess without having sent a scheme means the Java server is in offline mode:
@@ -131,6 +153,7 @@ public final class JavaLoginHandler {
       log.info("[Auth-Relay] {} is offline mode - offering the 'offline' scheme to '{}'",
           cs.getCurrentServer() == null ? "the backend" : cs.getCurrentServer(),
           cs.getPlayerName());
+      openConsoleForReply();
       PacketManager.sendToConsole(cs,
           new ConsoleAuthSchemeS2CPacket(java.util.List.of("offline"), ""));
     }
@@ -280,6 +303,7 @@ public final class JavaLoginHandler {
           this.schemeSent = true;
           log.info("[Auth-Relay] asking LCE client '{}' to authenticate itself (uuid={})",
               cs.getPlayerName(), cs.getLceClientMojangUuid());
+          openConsoleForReply();
           PacketManager.sendToConsole(cs,
               new ConsoleAuthSchemeS2CPacket(java.util.List.of("mojang"), hash));
           return;
