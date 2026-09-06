@@ -238,6 +238,34 @@ public final class BlockRegistry extends ArrayRegistry<Block> {
       log.info(
           "[BlockRegistry] Loaded " + blocksJson.size() + " blocks (max id=" + maxId + "), created "
               + remapTable.size() + " remap entries");
+
+      // MinecraftConsoles fork: say out loud what every unsupported block turns into.
+      //
+      // A block LCE does not know becomes whatever scores closest, and remapBlock falls back to
+      // stone - a full solid cube - when even that is unsupported. When the original had no
+      // collision at all, the player then walks into something the server says is not there, and
+      // gets stuck on nothing. That is invisible from both logs: the proxy is forwarding movement
+      // and the client is running, the world simply does not match.
+      //
+      // Printed once at startup, and the shape change is called out separately from the identity
+      // change, because only the shape can trap somebody.
+      for (int id = 0; id < byId.length; id++) {
+        Block original = byId[id];
+        if (original == null || !UNSUPPORTED_BLOCKS.contains(original.name())) {
+          continue;
+        }
+        int mappedId = remapTable.get(id);
+        Block mapped = mappedId >= 0 && mappedId < byId.length ? byId[mappedId] : null;
+        boolean wasSolid = "block".equals(original.boundingBox());
+        boolean nowSolid = mapped != null && "block".equals(mapped.boundingBox());
+
+        log.info("[BlockRegistry] unsupported {} ({}) -> {} ({}) | shape {} -> {}{}",
+            original.name(), id,
+            mapped != null ? mapped.name() : "?", mappedId,
+            original.boundingBox(), mapped != null ? mapped.boundingBox() : "?",
+            (!wasSolid && nowSolid) ? "   <-- SOLID WHERE THE SERVER HAS NONE" : "");
+      }
+
       return new BlockRegistry(byId, remapTable);
 
     } catch (Exception e) {

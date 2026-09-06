@@ -563,6 +563,11 @@ public final class ConsoleSession {
     return !pendingTeleports.isEmpty();
   }
 
+  /** How many teleports are waiting to be acknowledged. For the movement log only. */
+  public int pendingTeleportCount() {
+    return pendingTeleports.size();
+  }
+
   public Vec3d consumePendingTeleport() {
     return pendingTeleports.poll();
   }

@@ -78,6 +78,24 @@ public final class JavaPlayerPositionLookS2CPacket extends JavaS2CPacket {
       cs.setWaitingForInitialTeleport(false);
     }
 
+    // MinecraftConsoles fork: every teleport the server sends, with where it came from.
+    //
+    // Nothing logged these, which left the most visible symptom unmeasurable: a flash to somewhere
+    // else - the death lobby, say - and straight back. That is two positions in quick succession,
+    // and without a record of what the server actually asked for there is no way to tell a server
+    // that sent two teleports from a proxy that answered the first one wrongly and provoked the
+    // second. The distance from the previous position is printed because a large jump followed by a
+    // small correction is the signature of the second case.
+    double jump = Math.sqrt(
+        Math.pow(resolvedX - lastPos.x(), 2)
+            + Math.pow(resolvedY - lastPos.y(), 2)
+            + Math.pow(resolvedZ - lastPos.z(), 2));
+    log.info("[MOVE-TP] server moved us to {} {} {} (flags=0x{}, {} blocks from where we were, "
+            + "queue now {})",
+        String.format("%.2f", resolvedX), String.format("%.2f", resolvedY),
+        String.format("%.2f", resolvedZ), Integer.toHexString(flags & 0xFF),
+        String.format("%.2f", jump), cs.pendingTeleportCount() + 1);
+
     cs.storePendingTeleport(resolvedX, resolvedY, resolvedZ);
 
     PacketManager.sendToConsole(cs, new ConsoleMovePlayerPosRotS2CPacket(
