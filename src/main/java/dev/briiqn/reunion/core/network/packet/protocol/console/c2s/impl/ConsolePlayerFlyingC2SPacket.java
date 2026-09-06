@@ -33,7 +33,11 @@ import dev.briiqn.reunion.core.util.math.vector.Vec3d;
 import io.netty.buffer.ByteBuf;
 import lombok.Getter;
 
+@lombok.extern.log4j.Log4j2
 public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
+
+  /** Rate limiter for the movement log. Approximate on purpose - it only paces a print. */
+  private static int MOVE_LOG_COUNTER = 0;
 
   @Getter
   protected Vec3d pos = Vec3d.ZERO;
@@ -95,7 +99,19 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
     float newPitch = hasRot ? rot.pitch() : lastRot.pitch();
 
     if (session.hasPendingTeleport()) {
-      if (hasPos && hasRot) {
+      // MinecraftConsoles fork: ANY movement packet acknowledges the teleport, not only one
+      // carrying position and rotation together.
+      //
+      // An LCE client does not send a combined update every tick - it sends position-only and
+      // rotation-only packets too (MovePlayerPos / MovePlayerRot are separate ids). Requiring both
+      // meant a player who happened to be moving without turning drained nothing, so the teleport
+      // stayed queued and every one of their updates fell into the branch below, which sends a
+      // packet with no position in it at all. From the server's point of view the player had
+      // stopped dead.
+      //
+      // Neither field is actually needed to answer: the reply carries the TELEPORT's coordinates
+      // and the last known rotation, both of which are already in hand.
+      if (hasPos || hasRot) {
         Vec3d coords = session.consumePendingTeleport();
         Vec2f teleportRot = lastRot;
         session.setLastPos(new Vec3d(javaX, javaY, javaZ));
@@ -134,6 +150,23 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
     }
 
     if (hasPos) {
+      // MinecraftConsoles fork: the measured half of the movement telemetry. This is the distance
+      // the console client actually travelled between two position packets; the client prints the
+      // speed it believes it has (see LocalPlayer::aiStep) and the server's own figures are logged
+      // above. Put the three on one line and a disagreement stops being a guess.
+      //
+      // Every twentieth packet, and only while moving: enough to watch, not enough to bury the log.
+      double dx = javaX - lastPos.x();
+      double dz = javaZ - lastPos.z();
+      double moved = Math.sqrt(dx * dx + dz * dz);
+      if (moved > 0.001 && (++MOVE_LOG_COUNTER % 20) == 0) {
+        log.info("[MOVE-PROXY] moved={} per packet | server attr={} abilitiesWalk={} y={}",
+            String.format("%.5f", moved),
+            String.format("%.5f", session.getServerMovementSpeed()),
+            String.format("%.5f", session.getServerWalkingSpeed()),
+            String.format("%.3f", javaY));
+      }
+
       session.checkWorldBounds(javaX, javaZ);
       session.setLastPos(new Vec3d(javaX, javaY, javaZ));
     }

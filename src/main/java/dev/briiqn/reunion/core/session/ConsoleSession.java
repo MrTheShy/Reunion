@@ -155,6 +155,14 @@ public final class ConsoleSession {
   @Setter
   private volatile String lceAuthName = null;
 
+  // MinecraftConsoles fork: what the SERVER says this player's speed is, kept only so the
+  // movement log can print it beside what the client actually did. Two numbers on one line is
+  // the whole point - neither side alone can show a disagreement about speed.
+  @Setter
+  private volatile double serverMovementSpeed = -1.0;
+  @Setter
+  private volatile float serverWalkingSpeed = -1.0f;
+
   @Setter
   private boolean loggedIn = false;
   private int javaEntityId = -1;
@@ -496,7 +504,23 @@ public final class ConsoleSession {
     }
   }
 
+  /**
+   * MinecraftConsoles fork: keeps only the LATEST teleport, replacing any still waiting.
+   *
+   * <p>This used to append, and the queue then had no bound. A server sends several
+   * PlayerPositionAndLook packets in a burst - a death and respawn is the obvious case - and the
+   * player's own movement is suppressed for as long as anything is queued. Each entry needs one
+   * movement packet to drain, so a burst of N teleports silently swallowed the next N updates; if
+   * the server kept correcting because it never saw the player accept, the queue grew as fast as it
+   * drained and the player simply could not move. Measured against a live session: three stalls of
+   * 11, 5 and 8 seconds where not one position reached the server.
+   *
+   * <p>Replacing is not a compromise, it is the correct reading: an older teleport is stale by
+   * definition. The server's last word on where the player is is the only one worth acknowledging,
+   * and acknowledging a superseded position would invite the very correction that caused the pile-up.
+   */
   public void storePendingTeleport(double x, double y, double z) {
+    pendingTeleports.clear();
     pendingTeleports.add(new Vec3d(x, y, z));
   }
 

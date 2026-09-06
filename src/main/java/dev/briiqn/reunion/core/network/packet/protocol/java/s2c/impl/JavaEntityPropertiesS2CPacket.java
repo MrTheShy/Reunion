@@ -165,7 +165,45 @@ public final class JavaEntityPropertiesS2CPacket extends JavaS2CPacket {
       return;
     }
 
+    // Only this player's own movement speed is worth reporting: it is the one the server
+    // validates our position against.
+    if (entityId == session.getConsoleSession().getJavaEntityId()) {
+      for (ConsoleUpdateAttributesS2CPacket.Snapshot snapshot : translated) {
+        if (snapshot.attributeId() == ATTR_MOVEMENT_SPEED) {
+          double value = effectiveValue(snapshot);
+          session.getConsoleSession().setServerMovementSpeed(value);
+          log.info("[MOVE-SERVER] attributes: base={} -> value={} ({} modifier(s))",
+              snapshot.base(), value, snapshot.modifiers().size());
+        }
+      }
+    }
+
     PacketManager.sendToConsole(session.getConsoleSession(),
         new ConsoleUpdateAttributesS2CPacket(consoleId, translated));
+  }
+
+  /**
+   * The standard attribute formula: additions first, then the two multiplications. Reproduced here
+   * only to have a number to print - the client does its own arithmetic and is the one that counts.
+   */
+  private static double effectiveValue(ConsoleUpdateAttributesS2CPacket.Snapshot snapshot) {
+    double value = snapshot.base();
+    for (ConsoleUpdateAttributesS2CPacket.Modifier m : snapshot.modifiers()) {
+      if (m.operation() == 0) {
+        value += m.amount();
+      }
+    }
+    double base = value;
+    for (ConsoleUpdateAttributesS2CPacket.Modifier m : snapshot.modifiers()) {
+      if (m.operation() == 1) {
+        value += base * m.amount();
+      }
+    }
+    for (ConsoleUpdateAttributesS2CPacket.Modifier m : snapshot.modifiers()) {
+      if (m.operation() == 2) {
+        value *= 1.0 + m.amount();
+      }
+    }
+    return value;
   }
 }

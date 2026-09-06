@@ -24,6 +24,7 @@ import dev.briiqn.reunion.core.network.packet.protocol.console.s2c.impl.ConsoleP
 import dev.briiqn.reunion.core.network.packet.protocol.java.s2c.JavaS2CPacket;
 import dev.briiqn.reunion.core.session.JavaSession;
 import io.netty.buffer.ByteBuf;
+import lombok.extern.log4j.Log4j2;
 
 /**
  * MinecraftConsoles fork - PlayerAbilities, forwarded to the console client.
@@ -37,6 +38,7 @@ import io.netty.buffer.ByteBuf;
  * <p>A pure forward: protocol 47 and LCE agree on the layout and on the meaning of every flag bit,
  * so translating would only be an opportunity to introduce a difference.
  */
+@Log4j2
 @PacketInfo(side = PacketSide.JAVA_S2C, id = 0x39, supports = {47})
 public final class JavaPlayerAbilitiesS2CPacket extends JavaS2CPacket {
 
@@ -56,6 +58,9 @@ public final class JavaPlayerAbilitiesS2CPacket extends JavaS2CPacket {
 
   @Override
   public void handle(JavaSession session) {
+    session.getConsoleSession().setServerWalkingSpeed(walkingSpeed);
+    log.info("[MOVE-SERVER] abilities: walk={} fly={} flags=0x{}", walkingSpeed, flyingSpeed,
+        Integer.toHexString(flags & 0xFF));
     PacketManager.sendToConsole(session.getConsoleSession(),
         new ConsolePlayerAbilitiesS2CPacket(flags, flyingSpeed, walkingSpeed));
   }
