@@ -519,6 +519,40 @@ public final class ConsoleSession {
    * definition. The server's last word on where the player is is the only one worth acknowledging,
    * and acknowledging a superseded position would invite the very correction that caused the pile-up.
    */
+  // MinecraftConsoles fork: which branch is swallowing movement, and for how long.
+  //
+  // A stall is already known to look like this from the outside: the client keeps sending its 20
+  // position packets a second and not one of them reaches the server. Three separate paths in
+  // ConsolePlayerFlyingC2SPacket can return early without forwarding a position, and from the
+  // outside they are indistinguishable - which is exactly why the last attempt at a fix picked the
+  // wrong one. This says which, with the state that kept it there.
+  //
+  // Pure instrumentation: nothing here changes what is sent.
+  @Getter(AccessLevel.NONE)
+  private int movementStallPackets = 0;
+
+  /** Called when a movement packet was dropped without its position reaching the server. */
+  public void noteMovementStall(String branch, boolean hasPos, boolean hasRot) {
+    movementStallPackets++;
+    // One line after a second of silence, then one every two seconds. Enough to identify the
+    // branch and watch the state evolve, not enough to bury the log.
+    if (movementStallPackets == 20
+        || (movementStallPackets > 20 && movementStallPackets % 40 == 0)) {
+      log.warn("[MOVE-STALL] {} packet(s) swallowed | branch={} teleportQueue={} acks={} "
+              + "hasPos={} hasRot={}",
+          movementStallPackets, branch, pendingTeleports.size(), pendingTeleportAcks.get(),
+          hasPos, hasRot);
+    }
+  }
+
+  /** Called when a movement packet made it through to the server. */
+  public void noteMovementForwarded() {
+    if (movementStallPackets >= 20) {
+      log.warn("[MOVE-STALL] recovered after {} packet(s)", movementStallPackets);
+    }
+    movementStallPackets = 0;
+  }
+
   public void storePendingTeleport(double x, double y, double z) {
     pendingTeleports.add(new Vec3d(x, y, z));
   }

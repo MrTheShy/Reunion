@@ -78,6 +78,7 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
   public void handle(ConsoleSession session) {
 
     if (session.isWaitingForInitialTeleport()) {
+      session.noteMovementStall("waiting-initial-teleport", hasPos, hasRot);
       return;
     }
 
@@ -113,6 +114,9 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
       } else {
         PacketManager.sendToJava(session.getJavaSession(), new JavaPlayerC2SPacket(onGround));
       }
+      // Either way this packet's own position did not reach the server: the first case answered
+      // with the TELEPORT's coordinates, the second with no position at all.
+      session.noteMovementStall("pending-teleport", hasPos, hasRot);
       return;
     }
 
@@ -121,6 +125,7 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
         session.getPendingTeleportAcks().decrementAndGet();
       }
       PacketManager.sendToJava(session.getJavaSession(), new JavaPlayerC2SPacket(onGround));
+      session.noteMovementStall("teleport-ack", hasPos, hasRot);
       return;
     }
 
@@ -133,6 +138,7 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
           Dimension.fromIdOrDefault(session.getDimension()));
 
       if (!PluginEventHooks.fireMove(new ConsoleSessionPlayerAdapter(session), from, to)) {
+        session.noteMovementStall("plugin-denied-move", hasPos, hasRot);
         return;
       }
     }
@@ -158,6 +164,9 @@ public abstract class ConsolePlayerFlyingC2SPacket extends ConsoleC2SPacket {
       session.checkWorldBounds(javaX, javaZ);
       session.setLastPos(new Vec3d(javaX, javaY, javaZ));
     }
+
+    // Past every early return: this packet is going to the server as itself.
+    session.noteMovementForwarded();
 
     boolean rotationChanged = false;
     if (hasRot) {
