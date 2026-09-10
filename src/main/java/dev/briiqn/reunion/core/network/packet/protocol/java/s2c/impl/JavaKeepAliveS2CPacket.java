@@ -26,8 +26,12 @@ import dev.briiqn.reunion.core.session.JavaSession;
 import dev.briiqn.reunion.core.util.VarIntUtil;
 import io.netty.buffer.ByteBuf;
 
+@lombok.extern.log4j.Log4j2
 @PacketInfo(side = PacketSide.JAVA_S2C, id = 0x00, supports = {47})
 public final class JavaKeepAliveS2CPacket extends JavaS2CPacket {
+
+  /** How many keep-alives the server has asked for. See the note in handle(). */
+  private static int asked = 0;
 
   private int keepAliveId;
 
@@ -42,6 +46,11 @@ public final class JavaKeepAliveS2CPacket extends JavaS2CPacket {
   @Override
   public void handle(JavaSession session) {
     session.getConsoleSession().onKeepAliveSent();
+    // MinecraftConsoles fork: the other half of the round trip. Pair this with the line
+    // ConsoleKeepAliveC2SPacket prints - a request with no answer after it is a client that has
+    // gone quiet, and a Java server drops such a client at thirty seconds.
+    log.info("[KEEPALIVE] server asked id={} (request #{}) -> forwarding to the console",
+        keepAliveId, ++asked);
     PacketManager.sendToConsole(session.getConsoleSession(),
         new ConsoleKeepAliveS2CPacket(keepAliveId));
   }

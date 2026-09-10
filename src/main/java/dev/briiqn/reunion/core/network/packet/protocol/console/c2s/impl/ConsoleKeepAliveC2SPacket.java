@@ -24,9 +24,18 @@ import dev.briiqn.reunion.core.network.packet.protocol.console.c2s.ConsoleC2SPac
 import dev.briiqn.reunion.core.network.packet.protocol.java.c2s.impl.JavaKeepAliveC2SPacket;
 import dev.briiqn.reunion.core.session.ConsoleSession;
 import io.netty.buffer.ByteBuf;
+import lombok.extern.log4j.Log4j2;
 
-@PacketInfo(side = PacketSide.CONSOLE_C2S, id = 0, supports = {39, 78})
+@Log4j2
+@PacketInfo(side = PacketSide.CONSOLE_C2S, id = 0, supports = {39, 78, 80})
 public final class ConsoleKeepAliveC2SPacket extends ConsoleC2SPacket {
+
+  // MinecraftConsoles fork: how many answers the console has actually produced. A Java server
+  // drops a client that has not answered in thirty seconds, and two sessions in a row died at
+  // almost exactly thirty-two - a timeout signature, not a malformed packet. Whether this number
+  // ever moves is the difference between "the console is not answering" and "it answers and the
+  // problem is elsewhere", and nothing in the logs could tell those apart.
+  private static int answered = 0;
 
   private int keepAliveId;
 
@@ -46,6 +55,9 @@ public final class ConsoleKeepAliveC2SPacket extends ConsoleC2SPacket {
   @Override
   public void handle(ConsoleSession session) {
     session.onKeepAliveReceived();
+
+    log.info("[KEEPALIVE] console answered id={} -> forwarding to the server (answer #{})",
+        keepAliveId, ++answered);
 
     PacketManager.sendToJava(session.getJavaSession(), new JavaKeepAliveC2SPacket(keepAliveId));
   }
