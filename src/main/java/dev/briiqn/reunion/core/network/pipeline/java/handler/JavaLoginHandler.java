@@ -174,25 +174,75 @@ public final class JavaLoginHandler {
   private void handleLoginDisconnect(ChannelHandlerContext ctx, ByteBuf buf) {
     try {
       String reasonJson = StringUtil.readJavaString(buf);
-      String parsedReason = reasonJson;
-      try {
-        com.alibaba.fastjson2.JSONObject obj =
-            com.alibaba.fastjson2.JSON.parseObject(reasonJson);
-        if (obj.containsKey("text")) {
-          parsedReason = obj.getString("text");
-        } else if (obj.containsKey("translate")) {
-          parsedReason = obj.getString("translate");
-        }
-      } catch (Exception ignored) {
+      // MinecraftConsoles fork: read the WHOLE component, not just its top-level text.
+      //
+      // A modern kick message usually has an empty "text" and puts everything the player is meant
+      // to read in "extra". Taking only "text" therefore turned a real explanation into an empty
+      // string, and the log said 'Reason:' followed by nothing - the one thing that would have
+      // explained the kick, thrown away at the last step. Seen against Hypixel.
+      String parsedReason = flattenComponent(reasonJson);
+      if (parsedReason.isEmpty()) {
+        // Nothing readable came out. The raw JSON is ugly but it is what the server said, and an
+        // ugly answer beats no answer.
+        parsedReason = reasonJson;
       }
       session.setDisconnectReason(parsedReason);
       log.warn("[Disconnect] Java Server rejected login for {}. Reason: {}",
           cs.getPlayerName(), parsedReason);
+      log.warn("[Disconnect] raw reason: {}", reasonJson);
     } catch (Exception e) {
       log.warn("[Disconnect] Java Server rejected login for {} (0x00, unreadable reason).",
           cs.getPlayerName());
     }
     ctx.close();
+  }
+
+  /**
+   * MinecraftConsoles fork: reduces a chat component to the text a person would read.
+   *
+   * <p>A component is a bare string, or an object with "text", or an object whose real content
+   * hangs off "extra" as a list of more of the same - and servers still send all three, often
+   * nested. Section-sign colour codes are stripped: the destination is a log line.
+   *
+   * <p>Returns "" when nothing readable can be extracted, which the caller treats as a signal to
+   * fall back to the raw JSON rather than report an empty reason.
+   */
+  private static String flattenComponent(String json) {
+    StringBuilder sb = new StringBuilder();
+    try {
+      appendComponent(com.alibaba.fastjson2.JSON.parse(json), sb, 0);
+    } catch (Exception e) {
+      return "";
+    }
+    return sb.toString().replaceAll("§.", "").replace('\n', ' ').trim();
+  }
+
+  private static void appendComponent(Object node, StringBuilder sb, int depth) {
+    // Components nest, and nothing stops a server sending a pathological one.
+    if (node == null || depth > 16) {
+      return;
+    }
+    if (node instanceof String s) {
+      sb.append(s);
+      return;
+    }
+    if (node instanceof com.alibaba.fastjson2.JSONObject obj) {
+      String text = obj.getString("text");
+      if (text != null) {
+        sb.append(text);
+      }
+      String translate = obj.getString("translate");
+      if (translate != null && (text == null || text.isEmpty())) {
+        sb.append(translate);
+      }
+      appendComponent(obj.get("extra"), sb, depth + 1);
+      return;
+    }
+    if (node instanceof com.alibaba.fastjson2.JSONArray arr) {
+      for (Object child : arr) {
+        appendComponent(child, sb, depth + 1);
+      }
+    }
   }
 
   private void handleLoginPluginRequest(ChannelHandlerContext ctx, ByteBuf buf) {
