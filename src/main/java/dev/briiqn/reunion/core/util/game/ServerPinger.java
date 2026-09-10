@@ -165,8 +165,17 @@ public final class ServerPinger {
       int max = 0;
       String note = "";
 
+      // Read the document out of the buffer BEFORE parsing it, so the raw text is still in hand if
+      // the parser gives up - see the fallback below.
+      String statusJson;
       try {
-        JSONObject root = JSON.parseObject(readString(responseBuf));
+        statusJson = readString(responseBuf);
+      } catch (Throwable t) {
+        return new Status(true, "", 0, 0, "", -1, latency, "status unreadable: " + t);
+      }
+
+      try {
+        JSONObject root = JSON.parseObject(statusJson);
         if (root != null) {
           JSONObject version = root.getJSONObject("version");
           if (version != null) {
@@ -190,6 +199,25 @@ public final class ServerPinger {
         note = "status decoded partially: " + t;
         log.warn("[ServerPinger] {}:{} answered but its status could not be read: {}",
             connectHost, connectPort, t.toString());
+      }
+
+      // The protocol number is the one field here that changes behaviour rather than just what a
+      // menu row says: it is what ViaVersion translates TO. Losing it is not cosmetic - the proxy
+      // falls back to a configured guess, translates towards the wrong version, and the packets it
+      // then sends are ones the server cannot parse. That is how "An internal error occurred in
+      // your connection" arrives thirty seconds into a session.
+      //
+      // Two public servers, ita-java.coralmc.it and mc.waraccademy.it, answer with a document the
+      // JSON layer chokes on. Their status is perfectly well-formed as far as the protocol is
+      // concerned; something about it upsets that particular parser. Rather than diagnose someone
+      // else's MOTD, take the number straight out of the text - it is a bare integer under a fixed
+      // key, and no amount of decorative nonsense elsewhere in the document can disturb it.
+      if (protocol < 0) {
+        protocol = extractProtocol(statusJson);
+        if (protocol >= 0) {
+          log.info("[ServerPinger] {}:{} protocol {} recovered from the raw status",
+              connectHost, connectPort, protocol);
+        }
       }
 
       return new Status(true, motd, online, max, versionName, protocol, latency, note);
@@ -259,6 +287,31 @@ public final class ServerPinger {
 
   public static void clear() {
     CACHE.clear();
+  }
+
+  /**
+   * Pulls {@code "protocol": N} out of a raw status document.
+   *
+   * <p>The last resort when the JSON parser will not cooperate. Deliberately blunt: the key appears
+   * once, inside "version", and its value is a bare integer, so a scan is enough and cannot be
+   * confused by whatever decoration sits in the rest of the document.
+   *
+   * @return the protocol number, or -1 if it is not there
+   */
+  private static int extractProtocol(String json) {
+    if (json == null) {
+      return -1;
+    }
+    java.util.regex.Matcher m =
+        java.util.regex.Pattern.compile("\"protocol\"\\s*:\\s*(-?\\d{1,6})").matcher(json);
+    if (!m.find()) {
+      return -1;
+    }
+    try {
+      return Integer.parseInt(m.group(1));
+    } catch (NumberFormatException e) {
+      return -1;
+    }
   }
 
   private static void writeFramedPacket(OutputStream out, ByteBuf packet) throws IOException {
